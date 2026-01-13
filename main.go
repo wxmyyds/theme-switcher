@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -20,7 +21,8 @@ const (
 	HWND_BROADCAST          = 0xFFFF
 	ERROR_SUCCESS           = 0
 	SW_HIDE                 = 0
-	SW_HIDE_CONSOLE         = 0x00000000
+	TOKEN_QUERY             = 0x0008
+	TokenElevation          = 20
 )
 
 // 全局初始化Windows API Proc
@@ -28,7 +30,8 @@ var (
 	modadvapi32          = syscall.NewLazyDLL("advapi32.dll")
 	moduser32            = syscall.NewLazyDLL("user32.dll")
 	modkernel32          = syscall.NewLazyDLL("kernel32.dll")
-	
+	modshell32           = syscall.NewLazyDLL("shell32.dll")
+
 	procRegOpenKeyExW    = modadvapi32.NewProc("RegOpenKeyExW")
 	procRegSetValueExW   = modadvapi32.NewProc("RegSetValueExW")
 	procRegCloseKey      = modadvapi32.NewProc("RegCloseKey")
@@ -36,6 +39,16 @@ var (
 	procSendNotifyMessageW = moduser32.NewProc("SendNotifyMessageW")
 	procShowWindow       = moduser32.NewProc("ShowWindow")
 	procGetConsoleWindow = modkernel32.NewProc("GetConsoleWindow")
+	procShellExecuteW    = modshell32.NewProc("ShellExecuteW")
+	procOpenProcessToken = modadvapi32.NewProc("OpenProcessToken")
+	procGetTokenInformation = modadvapi32.NewProc("GetTokenInformation")
+)
+
+// 全局变量
+var (
+	lastSwitchTime time.Time
+	switchMutex    sync.Mutex
+	logMutex       sync.Mutex // 日志写入锁
 )
 
 // 隐藏控制台窗口
@@ -44,14 +57,6 @@ func hideConsoleWindow() {
 	if consoleWindow != 0 {
 		procShowWindow.Call(consoleWindow, SW_HIDE)
 	}
-}
-
-// 获取最后一次Windows API错误
-func getLastError() error {
-	modkernel32 := syscall.NewLazyDLL("kernel32.dll")
-	procGetLastError := modkernel32.NewProc("GetLastError")
-	ret, _, _ := procGetLastError.Call()
-	return syscall.Errno(ret)
 }
 
 // 设置注册表DWORD值
@@ -73,13 +78,8 @@ func setRegistryValue(keyPath, valueName string, value uint32) error {
 		uintptr(KEY_SET_VALUE|KEY_WOW64_64KEY),
 		uintptr(unsafe.Pointer(&hKey)),
 	)
-
-	if err != syscall.Errno(0) {
-		return fmt.Errorf("调用RegOpenKeyExW失败: %w", err)
-	}
-
 	if ret != ERROR_SUCCESS {
-		return fmt.Errorf("打开注册表键失败: %w (路径: %s)", getLastError(), keyPath)
+		return fmt.Errorf("打开注册表键失败: 错误码 %d (路径: %s), 详细错误: %w", ret, keyPath, err)
 	}
 	defer procRegCloseKey.Call(hKey)
 
@@ -92,37 +92,47 @@ func setRegistryValue(keyPath, valueName string, value uint32) error {
 		uintptr(unsafe.Pointer(&data)),
 		uintptr(4),
 	)
-
-	if err != syscall.Errno(0) {
-		return fmt.Errorf("调用RegSetValueExW失败: %w", err)
-	}
-
 	if ret != ERROR_SUCCESS {
-		return fmt.Errorf("设置注册表值失败: %w (值名称: %s)", getLastError(), valueName)
+		return fmt.Errorf("设置注册表值失败: 错误码 %d (值名称: %s), 详细错误: %w", ret, valueName, err)
 	}
 
 	return nil
 }
 
-// 执行系统命令（无窗口版本）
+// 执行系统命令（无窗口版本，带超时，兼容所有Go版本）
 func executeCommandNoWindow(command string) error {
 	cmd := exec.Command("cmd", "/c", command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true, // 隐藏窗口
+		HideWindow: true,
 	}
-	return cmd.Run()
+
+	// 超时处理（无需context包）
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second): // 5秒超时
+		// 超时后杀死进程
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return fmt.Errorf("命令执行超时: %s", command)
+	}
 }
 
-// 重启Windows资源管理器（修复版）
+// 重启Windows资源管理器（还原最初版本逻辑）
 func restartExplorer() error {
 	logToFile("正在重启Windows资源管理器...")
 	
-	// 1. 结束explorer.exe进程（静默执行）
+	// 1. 结束explorer.exe进程
 	if err := executeCommandNoWindow("taskkill /f /im explorer.exe"); err != nil {
 		logToFile(fmt.Sprintf("结束explorer.exe失败（可能已经结束）: %v", err))
 	}
 	
-	// 等待一会儿
 	time.Sleep(1000 * time.Millisecond)
 	
 	// 2. 启动新的explorer.exe进程
@@ -135,7 +145,6 @@ func restartExplorer() error {
 		return fmt.Errorf("重启资源管理器失败: %w", err)
 	}
 	
-	// 等待资源管理器完全启动
 	time.Sleep(2000 * time.Millisecond)
 	logToFile("Windows资源管理器重启完成")
 	return nil
@@ -145,8 +154,11 @@ func restartExplorer() error {
 func notifyThemeChange() {
 	logToFile("发送主题变更通知...")
 	
-	// 发送WM_SETTINGCHANGE消息
-	lParam, _ := syscall.UTF16PtrFromString("ImmersiveColorSet")
+	lParam, err := syscall.UTF16PtrFromString("ImmersiveColorSet")
+	if err != nil {
+		logToFile(fmt.Sprintf("转换通知参数失败: %v", err))
+		return
+	}
 	procSendMessageW.Call(
 		uintptr(HWND_BROADCAST),
 		uintptr(WM_SETTINGCHANGE),
@@ -154,8 +166,11 @@ func notifyThemeChange() {
 		uintptr(unsafe.Pointer(lParam)),
 	)
 	
-	// 发送SendNotifyMessage（异步）
-	lParam2, _ := syscall.UTF16PtrFromString("Policy")
+	lParam2, err := syscall.UTF16PtrFromString("Policy")
+	if err != nil {
+		logToFile(fmt.Sprintf("转换通知参数失败: %v", err))
+		return
+	}
 	procSendNotifyMessageW.Call(
 		uintptr(HWND_BROADCAST),
 		uintptr(WM_SETTINGCHANGE),
@@ -166,108 +181,78 @@ func notifyThemeChange() {
 	time.Sleep(500 * time.Millisecond)
 }
 
-// 切换到浅色模式
+// 切换到浅色模式（还原你最初的逻辑）
 func switchToLightMode() error {
 	registryPath := `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 
-	logToFile("正在切换到浅色模式...")
+	logToFile("正在切换到浅色模式（带白色任务栏字体但不开启重点颜色）...")
 	
-	// 设置注册表值
 	if err := setRegistryValue(registryPath, "AppsUseLightTheme", 1); err != nil {
 		return fmt.Errorf("设置AppsUseLightTheme失败: %w", err)
 	}
 	if err := setRegistryValue(registryPath, "SystemUsesLightTheme", 1); err != nil {
 		return fmt.Errorf("设置SystemUsesLightTheme失败: %w", err)
 	}
-	// 重要：只设置ColorPrevalence为1（让任务栏字体变白色），但不开启"在开始和任务栏上显示重点颜色"
-	if err := setRegistryValue(registryPath, "ColorPrevalence", 1); err != nil {
-		return fmt.Errorf("设置ColorPrevalence失败: %w", err)
+	
+	if err := setRegistryValue(registryPath, "ColorPrevalence", 2); err != nil {
+		logToFile(fmt.Sprintf("注意：设置ColorPrevalence为2失败（但主题仍会切换）: %v", err))
 	}
 
 	logToFile("注册表设置完成，开始刷新...")
 	
-	// 发送通知
 	notifyThemeChange()
 	
-	// 强制刷新命令（静默执行）
 	if err := executeCommandNoWindow("rundll32.exe user32.dll,UpdatePerUserSystemParameters 1, True"); err != nil {
 		logToFile(fmt.Sprintf("强制刷新命令失败: %v", err))
 	}
 	
-	// 可选：重启资源管理器以确保完全生效（注释掉以避免弹窗）
-	// if err := restartExplorer(); err != nil {
-	//     logToFile(fmt.Sprintf("重启资源管理器失败，但主题设置已应用: %v", err))
-	// }
+	if err := executeCommandNoWindow("powershell -Command \"& {Get-Process explorer | Stop-Process -Force; Start-Sleep -Seconds 2; explorer}\""); err != nil {
+		logToFile(fmt.Sprintf("PowerShell刷新失败（非关键错误）: %v", err))
+	}
 	
-	logToFile("浅色模式切换完成")
+	time.Sleep(2000 * time.Millisecond)
+	logToFile("浅色模式切换完成（任务栏字体应为白色，但不显示重点颜色）")
 	return nil
 }
 
-// 切换到深色模式
+// 切换到深色模式（还原你最初的逻辑）
 func switchToDarkMode() error {
 	registryPath := `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 
 	logToFile("正在切换到深色模式...")
 	
-	// 设置注册表值
 	if err := setRegistryValue(registryPath, "AppsUseLightTheme", 0); err != nil {
 		return fmt.Errorf("设置AppsUseLightTheme失败: %w", err)
 	}
 	if err := setRegistryValue(registryPath, "SystemUsesLightTheme", 0); err != nil {
 		return fmt.Errorf("设置SystemUsesLightTheme失败: %w", err)
 	}
-	// 深色模式下设置ColorPrevalence为0或不设置，让系统使用默认
-	// 注意：我们完全移除ColorPrevalence的设置，只在浅色模式设置
-	// if err := setRegistryValue(registryPath, "ColorPrevalence", 0); err != nil {
-	//     return fmt.Errorf("设置ColorPrevalence失败: %w", err)
-	// }
+	
+	if err := setRegistryValue(registryPath, "ColorPrevalence", 0); err != nil {
+		logToFile(fmt.Sprintf("设置ColorPrevalence为0失败（非关键错误）: %v", err))
+	}
 
 	logToFile("注册表设置完成，开始刷新...")
 	
-	// 发送通知
 	notifyThemeChange()
 	
-	// 强制刷新命令（静默执行）
 	if err := executeCommandNoWindow("rundll32.exe user32.dll,UpdatePerUserSystemParameters 1, True"); err != nil {
 		logToFile(fmt.Sprintf("强制刷新命令失败: %v", err))
 	}
 	
+	time.Sleep(1000 * time.Millisecond)
 	logToFile("深色模式切换完成")
 	return nil
 }
 
-// 计算下次切换时间（简化版）
-func getNextSwitchTime() time.Duration {
-	now := time.Now()
-	currentHour := now.Hour()
-
-	var nextHour int
-	if currentHour < 6 {
-		nextHour = 6
-	} else if currentHour < 18 {
-		nextHour = 18
-	} else {
-		nextHour = 30 // 明天6点
-	}
-
-	// 计算目标时间
-	targetTime := time.Date(now.Year(), now.Month(), now.Day(), nextHour%24, 0, 0, 0, now.Location())
-	if nextHour >= 24 {
-		targetTime = targetTime.Add(24 * time.Hour)
-	}
-
-	duration := targetTime.Sub(now)
-	if duration <= 0 {
-		return 5 * time.Minute // 安全的最小间隔
-	}
-	return duration
-}
-
-// 创建日志文件
+// 日志写入（加锁）
 func logToFile(message string) {
+	logMutex.Lock()
+	defer logMutex.Unlock()
+	
 	exePath, err := os.Executable()
 	if err != nil {
-		return // 如果获取路径失败，静默退出
+		return
 	}
 	exeDir := filepath.Dir(exePath)
 	logPath := filepath.Join(exeDir, "theme_switcher.log")
@@ -280,75 +265,390 @@ func logToFile(message string) {
 
 	logTime := time.Now().Format("2006-01-02 15:04:05")
 	logEntry := fmt.Sprintf("[%s] %s\n", logTime, message)
-	file.WriteString(logEntry)
+	_, _ = file.WriteString(logEntry)
 }
 
-// 检查管理员权限
+// 正确判断管理员权限（兼容Go版本）
 func isAdmin() bool {
-	_, err := os.Open("\\\\.\\PHYSICALDRIVE0")
-	return err == nil
+	// 兼容syscall.GetCurrentProcess的返回值
+	var currentProcess syscall.Handle
+	var err error
+	// 新版Go返回两个值，旧版返回一个
+	if p, e := syscall.GetCurrentProcess(); e != nil {
+		err = e
+	} else {
+		currentProcess = p
+	}
+	if err != nil {
+		logToFile(fmt.Sprintf("获取当前进程失败: %v", err))
+		return false
+	}
+
+	var token syscall.Token
+	err = syscall.OpenProcessToken(currentProcess, TOKEN_QUERY, &token)
+	if err != nil {
+		logToFile(fmt.Sprintf("OpenProcessToken失败: %v", err))
+		return false
+	}
+	defer token.Close()
+
+	type tokenElevation struct {
+		TokenIsElevated uint32
+	}
+
+	var elevation tokenElevation
+	buf := (*byte)(unsafe.Pointer(&elevation))
+	bufLen := uint32(unsafe.Sizeof(elevation))
+	
+	// 修正GetTokenInformation参数类型
+	err = syscall.GetTokenInformation(token, TokenElevation, buf, bufLen, &bufLen)
+	if err != nil {
+		logToFile(fmt.Sprintf("GetTokenInformation失败: %v", err))
+		return false
+	}
+
+	return elevation.TokenIsElevated != 0
+}
+
+// 设置Windows计划任务（修复账户和语法问题）
+func setupScheduledTask() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
+	}
+	
+	exePath, err = filepath.Abs(exePath)
+	if err != nil {
+		return fmt.Errorf("获取绝对路径失败: %w", err)
+	}
+	
+	if _, err := os.Stat(exePath); err != nil {
+		return fmt.Errorf("可执行文件不存在: %w", err)
+	}
+	
+	taskName := "WindowsThemeAutoSwitcher"
+	exeDir := filepath.Dir(exePath)
+	
+	logToFile(fmt.Sprintf("创建计划任务 - 程序路径: %s", exePath))
+	
+	// 修复PowerShell脚本：使用当前用户账户，修正语法
+	psScript := fmt.Sprintf(`
+$taskName = "%s"
+$exePath = "%s"
+$exeDir = "%s"
+
+# 获取当前登录用户
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+# 检查并删除现有任务
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($existingTask) {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    Write-Host "已删除现有任务: $taskName"
+}
+
+# 创建任务主体（当前用户，最高权限）
+$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
+
+# 创建任务操作
+$action = New-ScheduledTaskAction -Execute $exePath -Argument "--scheduled" -WorkingDirectory $exeDir
+
+# 创建触发器：每天6:00和18:00
+$trigger1 = New-ScheduledTaskTrigger -Daily -At "6:00AM"
+$trigger2 = New-ScheduledTaskTrigger -Daily -At "6:00PM"
+
+# 创建任务设置（修正换行语法）
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries ` +
+`-DontStopIfGoingOnBatteries -StartWhenAvailable -WakeToRun ` +
+`-MultipleInstances IgnoreNew -RestartInterval (New-TimeSpan -Minutes 1) ` +
+`-RestartCount 3 -RunOnlyIfNetworkAvailable:$false ` +
+`-ExecutionTimeLimit (New-TimeSpan -Hours 1)
+
+# 注册任务
+$task = New-ScheduledTask -Action $action -Trigger $trigger1, $trigger2 -Principal $principal -Settings $settings ` +
+`-Description "自动切换Windows浅色/深色主题"
+
+try {
+    Register-ScheduledTask -TaskName $taskName -InputObject $task -Force -ErrorAction Stop
+    Write-Host "计划任务创建成功: $taskName"
+    
+    # 启用任务
+    Enable-ScheduledTask -TaskName $taskName
+    Write-Host "任务已启用"
+    
+    return $true
+} catch {
+    Write-Host "创建计划任务失败: $_"
+    return $false
+}
+`, taskName, exePath, exeDir)
+	
+	// 创建临时PS脚本
+	tempDir := os.TempDir()
+	psFile := filepath.Join(tempDir, "setup_theme_task.ps1")
+	err = os.WriteFile(psFile, []byte(psScript), 0600)
+	if err != nil {
+		return fmt.Errorf("创建临时脚本失败: %w", err)
+	}
+	defer os.Remove(psFile)
+	
+	logToFile("执行PowerShell脚本创建计划任务...")
+	
+	// 执行PowerShell（显示窗口便于调试）
+	cmd := exec.Command("powershell", "-ExecutionPolicy", "Bypass", "-File", psFile)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: false,
+	}
+	output, err := cmd.CombinedOutput()
+	logToFile(fmt.Sprintf("PowerShell输出:\n%s", string(output)))
+	
+	if err != nil {
+		logToFile(fmt.Sprintf("PowerShell创建任务失败: %v", err))
+		// 降级使用schtasks
+		if err2 := createTaskWithSchTasks(exePath, taskName); err2 != nil {
+			return fmt.Errorf("创建任务失败: %w, schtasks错误: %v", err, err2)
+		}
+	}
+	
+	logToFile("计划任务创建成功")
+	return nil
+}
+
+// 使用schtasks创建任务（备用）
+func createTaskWithSchTasks(exePath, taskName string) error {
+	logToFile("使用schtasks创建计划任务...")
+	
+	// 获取当前用户
+	currentUser, err := exec.Command("whoami").Output()
+	if err != nil {
+		return fmt.Errorf("获取当前用户失败: %w", err)
+	}
+	user := string(currentUser[:len(currentUser)-1]) // 去掉换行
+	
+	xmlContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>自动切换Windows主题</Description>
+    <Author>%s</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2030-01-01T06:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+    <CalendarTrigger>
+      <StartBoundary>2030-01-01T18:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>%s</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"%s"</Command>
+      <Arguments>--scheduled</Arguments>
+    </Exec>
+  </Actions>
+</Task>`, user, user, exePath)
+	
+	tempDir := os.TempDir()
+	xmlFile := filepath.Join(tempDir, "theme_task.xml")
+	err = os.WriteFile(xmlFile, []byte(xmlContent), 0600)
+	if err != nil {
+		return fmt.Errorf("创建XML文件失败: %w", err)
+	}
+	defer os.Remove(xmlFile)
+	
+	// 删除旧任务
+	exec.Command("schtasks", "/Delete", "/TN", taskName, "/F").Run()
+	
+	// 创建新任务
+	cmd := exec.Command("schtasks", "/Create", "/TN", taskName, "/XML", xmlFile, "/F")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	
+	if err != nil {
+		logToFile(fmt.Sprintf("schtasks失败: %v, 输出: %s", err, string(output)))
+		return fmt.Errorf("schtasks创建失败: %w", err)
+	}
+	
+	// 启用任务
+	exec.Command("schtasks", "/Change", "/TN", taskName, "/Enable").Run()
+	logToFile("schtasks创建任务成功")
+	return nil
+}
+
+// 执行单次切换
+func performSingleSwitch() error {
+	switchMutex.Lock()
+	defer switchMutex.Unlock()
+	
+	if time.Since(lastSwitchTime) < 5*time.Minute {
+		logToFile("跳过：距离上次切换不足5分钟")
+		return nil
+	}
+	
+	now := time.Now()
+	currentHour := now.Hour()
+	logToFile(fmt.Sprintf("=== 执行切换 (时间: %s) ===", now.Format("15:04:05")))
+	
+	var err error
+	var mode string
+	
+	if currentHour >= 6 && currentHour < 18 {
+		err = switchToLightMode()
+		mode = "浅色模式"
+		logToFile(fmt.Sprintf("当前时间 %02d，应该是白天，切换到浅色模式", currentHour))
+	} else {
+		err = switchToDarkMode()
+		mode = "深色模式"
+		logToFile(fmt.Sprintf("当前时间 %02d，应该是晚上，切换到深色模式", currentHour))
+	}
+	
+	if err != nil {
+		logToFile(fmt.Sprintf("切换到%s失败: %v", mode, err))
+		return err
+	}
+	
+	lastSwitchTime = now
+	logToFile(fmt.Sprintf("成功切换到%s", mode))
+	logCurrentThemeSettings()
+	return nil
+}
+
+// 记录当前主题设置
+func logCurrentThemeSettings() {
+	registryPath := `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
+	
+	cmd := exec.Command("reg", "query", fmt.Sprintf("HKCU\\%s", registryPath), "/v", "AppsUseLightTheme")
+	output, err := cmd.Output()
+	if err == nil {
+		logToFile(fmt.Sprintf("当前AppsUseLightTheme: %s", string(output)))
+	}
+	
+	cmd = exec.Command("reg", "query", fmt.Sprintf("HKCU\\%s", registryPath), "/v", "ColorPrevalence")
+	output, err = cmd.Output()
+	if err == nil {
+		logToFile(fmt.Sprintf("当前ColorPrevalence: %s", string(output)))
+	}
+}
+
+// 以管理员身份重新运行
+func runAsAdmin() bool {
+	exePath, err := os.Executable()
+	if err != nil {
+		logToFile(fmt.Sprintf("获取可执行路径失败: %v", err))
+		return false
+	}
+	
+	verb, _ := syscall.UTF16PtrFromString("runas")
+	exePathUTF16, _ := syscall.UTF16PtrFromString(exePath)
+	argsUTF16, _ := syscall.UTF16PtrFromString("--scheduled")
+	
+	ret, _, _ := procShellExecuteW.Call(
+		0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(exePathUTF16)),
+		uintptr(unsafe.Pointer(argsUTF16)),
+		0,
+		SW_HIDE,
+	)
+	
+	if ret > 32 {
+		logToFile("已请求管理员权限重新运行")
+		return true
+	}
+	
+	logToFile(fmt.Sprintf("ShellExecute失败，返回码: %d", ret))
+	return false
 }
 
 func main() {
-	// 隐藏控制台窗口
 	hideConsoleWindow()
-
-	// 检查管理员权限
-	if !isAdmin() {
-		logToFile("错误：需要以管理员身份运行此程序")
+	
+	logToFile("================================================")
+	logToFile("Windows主题自动切换程序启动")
+	logToFile(fmt.Sprintf("启动时间: %s", time.Now().Format("2006-01-02 15:04:05")))
+	logToFile(fmt.Sprintf("命令行参数: %v", os.Args))
+	
+	// 计划任务模式
+	if len(os.Args) > 1 && os.Args[1] == "--scheduled" {
+		logToFile("模式: 计划任务执行模式")
+		if !isAdmin() {
+			logToFile("警告：无管理员权限，尝试提升...")
+			if !runAsAdmin() {
+				logToFile("提升权限失败，退出")
+				return
+			}
+			return
+		}
+		
+		if err := performSingleSwitch(); err != nil {
+			logToFile(fmt.Sprintf("计划任务执行失败: %v", err))
+		} else {
+			logToFile("计划任务执行成功")
+		}
+		time.Sleep(2 * time.Second)
 		return
 	}
-
-	logToFile("=== Windows主题自动切换程序启动 ===")
-
-	// 首次切换
-	now := time.Now()
-	var initErr error
-	var initMode string
-
-	if now.Hour() >= 6 && now.Hour() < 18 {
-		initErr = switchToLightMode()
-		initMode = "浅色模式"
-	} else {
-		initErr = switchToDarkMode()
-		initMode = "深色模式"
-	}
-
-	logToFile(fmt.Sprintf("程序启动，当前时间: %s", now.Format("15:04:05")))
-	logToFile(fmt.Sprintf("首次尝试切换到%s", initMode))
-
-	if initErr != nil {
-		logToFile(fmt.Sprintf("首次切换失败: %v", initErr))
-	} else {
-		logToFile("首次切换成功")
-	}
-
-	// 主循环
-	for {
-		waitTime := getNextSwitchTime()
-		logToFile(fmt.Sprintf("等待 %.0f分钟直到下次切换", waitTime.Minutes()))
-
-		select {
-		case <-time.After(waitTime):
-			now = time.Now()
-			var err error
-			var mode string
-
-			if now.Hour() >= 6 && now.Hour() < 18 {
-				err = switchToLightMode()
-				mode = "浅色模式"
-			} else {
-				err = switchToDarkMode()
-				mode = "深色模式"
-			}
-
-			if err != nil {
-				logToFile(fmt.Sprintf("切换到%s失败: %v", mode, err))
-				// 失败后等待5分钟再试
-				time.Sleep(5 * time.Minute)
-			} else {
-				logToFile(fmt.Sprintf("成功切换到%s (时间: %s)", mode, now.Format("15:04:05")))
-			}
+	
+	// 交互模式
+	logToFile("模式: 交互模式")
+	logToFile("注意：浅色模式下将设置白色任务栏字体但不开启重点颜色功能")
+	
+	if !isAdmin() {
+		logToFile("错误：需要以管理员身份运行此程序")
+		logToFile("正在尝试以管理员身份重新启动...")
+		if runAsAdmin() {
+			logToFile("已请求提升权限，当前进程退出")
+			time.Sleep(2 * time.Second)
+			return
 		}
+		logToFile("无法获取管理员权限，程序退出")
+		time.Sleep(3 * time.Second)
+		return
+	}
+	
+	logToFile("管理员权限验证成功")
+	
+	logToFile("正在设置Windows计划任务...")
+	if err := setupScheduledTask(); err != nil {
+		logToFile(fmt.Sprintf("设置计划任务失败: %v", err))
+		logToFile("请手动创建计划任务：")
+		logToFile("1. 打开'任务计划程序'")
+		logToFile("2. 创建基本任务")
+		logToFile("3. 设置触发器为每天6:00和18:00")
+		logToFile("4. 操作为启动程序，选择此exe文件，参数添加--scheduled")
+		logToFile("5. 勾选'使用最高权限运行'")
+	} else {
+		logToFile("计划任务设置成功")
+		logToFile("提示：主题切换将由Windows计划任务在6:00和18:00自动执行")
+		logToFile("提示：您可以在'任务计划程序'中查看和管理任务")
+		
+		// 立即执行一次切换
+		logToFile("立即执行首次切换...")
+		if err := performSingleSwitch(); err != nil {
+			logToFile(fmt.Sprintf("首次切换失败: %v", err))
+		}
+		
+		// 显示成功信息并退出
+		logToFile("程序设置完成，将在10秒后退出")
+		logToFile("您可以查看日志文件了解详情：theme_switcher.log")
+		time.Sleep(10 * time.Second)
 	}
 }

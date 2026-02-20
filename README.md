@@ -1,43 +1,98 @@
 # Windows 主题自动切换器
 
-一个用于 Windows 11 的自动深浅色主题切换工具，根据时间自动切换系统主题模式。
+[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/yourusername/theme-switcher)
+[![Platform](https://img.shields.io/badge/platform-Windows-brightgreen.svg)](https://github.com/yourusername/theme-switcher)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/yourusername/theme-switcher)
 
-## 🤖 AI 声明
+## 📖 简介
 
-本项目的主要代码（约 95%）由 **AI 助手** 生成和优化，包括：
-- Windows API 调用和注册表操作
-- 系统主题切换逻辑
-- 日志记录系统
-- 错误处理机制
-- 程序架构设计
+Windows主题自动切换器是一个能够根据时间自动切换Windows系统浅色/深色主题的工具。它通过修改注册表实现主题切换，并支持自定义任务栏字体颜色。
 
-## 功能特点
+## ✨ 功能特点
 
-- 🌓 自动在浅色模式和深色模式之间切换
-- ⏰ 每天 6:00 自动切换到浅色模式
-- 🌙 每天 18:00 自动切换到深色模式
-- 📝 自动记录运行日志
-- 🚫 无界面后台运行
-- ⚡ 静默刷新，不弹窗不干扰
+- **自动切换**：根据设定的时间自动切换浅色/深色主题
+- **自定义颜色**：可分别设置浅色/深色模式下的任务栏字体颜色
+- **灵活配置**：通过JSON配置文件自定义所有参数
+- **计划任务**：自动创建Windows计划任务，无需手动设置
+- **日志记录**：可选择是否记录运行日志
+- **无窗口运行**：后台静默运行，不干扰用户操作
 
-## 技术原理
+## 📋 系统要求
 
-通过修改以下注册表键值实现主题切换：
-- `AppsUseLightTheme` - 应用程序主题
-- `SystemUsesLightTheme` - 系统主题  
-- `ColorPrevalence` - 任务栏字体颜色
+- Windows 10 / Windows 11
+- 管理员权限（必需）
 
-## 使用方法
+## 🚀 快速开始
 
-### 1. 下载使用
-- 从 Releases 页面下载 `theme-switcher.exe`
-- **重要**：必须以管理员身份运行！
+### 下载安装
 
-### 2. 自行构建
-```bash
-# 克隆项目
-git clone https://github.com/wxmyyds/theme-switcher.git
-cd theme-switcher
+1. 下载最新版本的程序包
+2. 解压到任意目录（建议使用英文路径）
+3. 以管理员身份运行 `theme_switcher.exe`
 
-# 构建程序
-go build -ldflags="-H windowsgui" -o theme-switcher.exe
+### 首次运行
+
+首次运行程序会自动：
+- 创建默认配置文件 `config.json`
+- 创建计划任务（每天6:00和18:00自动切换）
+- 立即执行一次主题切换
+- 生成日志文件 `theme_switcher.log`
+
+参数说明
+light_mode_taskbar_color
+类型：string
+
+说明：设置在浅色模式下任务栏字体的颜色
+
+可选值：
+
+"white"：任务栏字体显示为白色
+
+"default"：使用系统默认颜色
+
+dark_mode_taskbar_color
+类型：string
+
+说明：设置在深色模式下任务栏字体的颜色
+
+可选值：
+
+"black"：任务栏字体显示为黑色
+
+"default"：使用系统默认颜色
+
+light_time_start
+类型：int
+
+说明：设置切换到浅色模式的时间（小时）
+
+取值范围：0（午夜）到 23（晚上11点）
+
+dark_time_start
+类型：int
+
+说明：设置切换到深色模式的时间（小时）
+
+取值范围：0（午夜）到 23（晚上11点）
+
+enable_logging
+类型：bool
+
+说明：是否将程序运行信息写入日志文件
+
+可选值：
+
+true：启用日志记录，生成 theme_switcher.log 文件
+
+false：禁用日志记录
+
+### 配置文件示例
+
+```json
+{
+  "light_mode_taskbar_color": "white",
+  "dark_mode_taskbar_color": "default",
+  "light_time_start": 6,
+  "dark_time_start": 18,
+  "enable_logging": true
+}

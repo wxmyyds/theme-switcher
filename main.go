@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,7 +50,26 @@ var (
 	lastSwitchTime time.Time
 	switchMutex    sync.Mutex
 	logMutex       sync.Mutex // 日志写入锁
+	config         Config     // 配置文件
 )
+
+// 配置文件结构
+type Config struct {
+	LightModeTaskbarColor string `json:"light_mode_taskbar_color"` // "white" 或 "default"
+	DarkModeTaskbarColor  string `json:"dark_mode_taskbar_color"`  // "black" 或 "default"
+	LightTimeStart        int    `json:"light_time_start"`         // 浅色模式开始时间（小时）
+	DarkTimeStart         int    `json:"dark_time_start"`          // 深色模式开始时间（小时）
+	EnableLogging         bool   `json:"enable_logging"`           // 是否启用日志
+}
+
+// 默认配置
+var defaultConfig = Config{
+	LightModeTaskbarColor: "white",  // 默认浅色模式任务栏字体为白色
+	DarkModeTaskbarColor:  "default", // 默认深色模式任务栏字体不变
+	LightTimeStart:        6,         // 早上6点开始浅色模式
+	DarkTimeStart:         18,        // 晚上6点开始深色模式
+	EnableLogging:         true,      // 默认启用日志
+}
 
 // 隐藏控制台窗口
 func hideConsoleWindow() {
@@ -181,11 +201,11 @@ func notifyThemeChange() {
 	time.Sleep(500 * time.Millisecond)
 }
 
-// 切换到浅色模式（还原你最初的逻辑）
+// 切换到浅色模式（根据配置决定任务栏字体颜色）
 func switchToLightMode() error {
 	registryPath := `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 
-	logToFile("正在切换到浅色模式（带白色任务栏字体但不开启重点颜色）...")
+	logToFile("正在切换到浅色模式...")
 	
 	if err := setRegistryValue(registryPath, "AppsUseLightTheme", 1); err != nil {
 		return fmt.Errorf("设置AppsUseLightTheme失败: %w", err)
@@ -194,8 +214,19 @@ func switchToLightMode() error {
 		return fmt.Errorf("设置SystemUsesLightTheme失败: %w", err)
 	}
 	
-	if err := setRegistryValue(registryPath, "ColorPrevalence", 2); err != nil {
-		logToFile(fmt.Sprintf("注意：设置ColorPrevalence为2失败（但主题仍会切换）: %v", err))
+	// 根据配置设置任务栏字体颜色
+	if config.LightModeTaskbarColor == "white" {
+		// ColorPrevalence为2时，任务栏字体为白色，但不开启重点颜色
+		if err := setRegistryValue(registryPath, "ColorPrevalence", 2); err != nil {
+			logToFile(fmt.Sprintf("注意：设置ColorPrevalence为2失败（但主题仍会切换）: %v", err))
+		}
+		logToFile("浅色模式：任务栏字体设置为白色")
+	} else {
+		// ColorPrevalence为0时，任务栏字体为黑色
+		if err := setRegistryValue(registryPath, "ColorPrevalence", 0); err != nil {
+			logToFile(fmt.Sprintf("注意：设置ColorPrevalence为0失败（但主题仍会切换）: %v", err))
+		}
+		logToFile("浅色模式：任务栏字体设置为黑色（默认）")
 	}
 
 	logToFile("注册表设置完成，开始刷新...")
@@ -211,11 +242,11 @@ func switchToLightMode() error {
 	}
 	
 	time.Sleep(2000 * time.Millisecond)
-	logToFile("浅色模式切换完成（任务栏字体应为白色，但不显示重点颜色）")
+	logToFile("浅色模式切换完成")
 	return nil
 }
 
-// 切换到深色模式（还原你最初的逻辑）
+// 切换到深色模式（根据配置决定任务栏字体颜色）
 func switchToDarkMode() error {
 	registryPath := `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 
@@ -228,8 +259,19 @@ func switchToDarkMode() error {
 		return fmt.Errorf("设置SystemUsesLightTheme失败: %w", err)
 	}
 	
-	if err := setRegistryValue(registryPath, "ColorPrevalence", 0); err != nil {
-		logToFile(fmt.Sprintf("设置ColorPrevalence为0失败（非关键错误）: %v", err))
+	// 根据配置设置任务栏字体颜色
+	if config.DarkModeTaskbarColor == "black" {
+		// 深色模式下设置任务栏字体为黑色
+		if err := setRegistryValue(registryPath, "ColorPrevalence", 0); err != nil {
+			logToFile(fmt.Sprintf("设置ColorPrevalence为0失败（非关键错误）: %v", err))
+		}
+		logToFile("深色模式：任务栏字体设置为黑色")
+	} else {
+		// 深色模式下任务栏字体为白色
+		if err := setRegistryValue(registryPath, "ColorPrevalence", 2); err != nil {
+			logToFile(fmt.Sprintf("注意：设置ColorPrevalence为2失败（但主题仍会切换）: %v", err))
+		}
+		logToFile("深色模式：任务栏字体设置为白色（默认）")
 	}
 
 	logToFile("注册表设置完成，开始刷新...")
@@ -247,6 +289,10 @@ func switchToDarkMode() error {
 
 // 日志写入（加锁）
 func logToFile(message string) {
+	if !config.EnableLogging {
+		return
+	}
+	
 	logMutex.Lock()
 	defer logMutex.Unlock()
 	
@@ -353,11 +399,11 @@ $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interact
 # 创建任务操作
 $action = New-ScheduledTaskAction -Execute $exePath -Argument "--scheduled" -WorkingDirectory $exeDir
 
-# 创建触发器：每天6:00和18:00
-$trigger1 = New-ScheduledTaskTrigger -Daily -At "6:00AM"
-$trigger2 = New-ScheduledTaskTrigger -Daily -At "6:00PM"
+# 创建触发器：每天 %d:00 和 %d:00
+$trigger1 = New-ScheduledTaskTrigger -Daily -At "%02d:00AM"
+$trigger2 = New-ScheduledTaskTrigger -Daily -At "%02d:00PM"
 
-# 创建任务设置（修正换行语法）
+# 创建任务设置
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries ` +
 `-DontStopIfGoingOnBatteries -StartWhenAvailable -WakeToRun ` +
 `-MultipleInstances IgnoreNew -RestartInterval (New-TimeSpan -Minutes 1) ` +
@@ -381,7 +427,7 @@ try {
     Write-Host "创建计划任务失败: $_"
     return $false
 }
-`, taskName, exePath, exeDir)
+`, taskName, exePath, exeDir, config.LightTimeStart, config.DarkTimeStart-12, config.LightTimeStart, config.DarkTimeStart-12)
 	
 	// 创建临时PS脚本
 	tempDir := os.TempDir()
@@ -394,7 +440,7 @@ try {
 	
 	logToFile("执行PowerShell脚本创建计划任务...")
 	
-	// 执行PowerShell（显示窗口便于调试）
+	// 执行PowerShell
 	cmd := exec.Command("powershell", "-ExecutionPolicy", "Bypass", "-File", psFile)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow: false,
@@ -433,12 +479,12 @@ func createTaskWithSchTasks(exePath, taskName string) error {
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2030-01-01T06:00:00</StartBoundary>
+      <StartBoundary>2030-01-01T%02d:00:00</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
     </CalendarTrigger>
     <CalendarTrigger>
-      <StartBoundary>2030-01-01T18:00:00</StartBoundary>
+      <StartBoundary>2030-01-01T%02d:00:00</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
     </CalendarTrigger>
@@ -464,7 +510,7 @@ func createTaskWithSchTasks(exePath, taskName string) error {
       <Arguments>--scheduled</Arguments>
     </Exec>
   </Actions>
-</Task>`, user, user, exePath)
+</Task>`, user, config.LightTimeStart, config.DarkTimeStart, user, exePath)
 	
 	tempDir := os.TempDir()
 	xmlFile := filepath.Join(tempDir, "theme_task.xml")
@@ -510,7 +556,7 @@ func performSingleSwitch() error {
 	var err error
 	var mode string
 	
-	if currentHour >= 6 && currentHour < 18 {
+	if currentHour >= config.LightTimeStart && currentHour < config.DarkTimeStart {
 		err = switchToLightMode()
 		mode = "浅色模式"
 		logToFile(fmt.Sprintf("当前时间 %02d，应该是白天，切换到浅色模式", currentHour))
@@ -533,6 +579,10 @@ func performSingleSwitch() error {
 
 // 记录当前主题设置
 func logCurrentThemeSettings() {
+	if !config.EnableLogging {
+		return
+	}
+	
 	registryPath := `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
 	
 	cmd := exec.Command("reg", "query", fmt.Sprintf("HKCU\\%s", registryPath), "/v", "AppsUseLightTheme")
@@ -578,8 +628,87 @@ func runAsAdmin() bool {
 	return false
 }
 
+// 加载配置文件
+func loadConfig() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
+	}
+	exeDir := filepath.Dir(exePath)
+	configPath := filepath.Join(exeDir, "config.json")
+	
+	// 先设置为默认配置
+	config = defaultConfig
+	
+	// 尝试读取配置文件
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// 配置文件不存在，创建默认配置文件
+			return saveConfig()
+		}
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	
+	// 解析JSON
+	err = json.Unmarshal(data, &config)
+	if err != nil {
+		return fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	
+	// 验证配置值
+	if config.LightModeTaskbarColor != "white" && config.LightModeTaskbarColor != "default" {
+		config.LightModeTaskbarColor = defaultConfig.LightModeTaskbarColor
+	}
+	if config.DarkModeTaskbarColor != "black" && config.DarkModeTaskbarColor != "default" {
+		config.DarkModeTaskbarColor = defaultConfig.DarkModeTaskbarColor
+	}
+	if config.LightTimeStart < 0 || config.LightTimeStart > 23 {
+		config.LightTimeStart = defaultConfig.LightTimeStart
+	}
+	if config.DarkTimeStart < 0 || config.DarkTimeStart > 23 {
+		config.DarkTimeStart = defaultConfig.DarkTimeStart
+	}
+	
+	logToFile(fmt.Sprintf("配置文件加载成功：浅色模式字体=%s，深色模式字体=%s，切换时间=%d:00和%d:00", 
+		config.LightModeTaskbarColor, config.DarkModeTaskbarColor, 
+		config.LightTimeStart, config.DarkTimeStart))
+	
+	return nil
+}
+
+// 保存配置文件
+func saveConfig() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
+	}
+	exeDir := filepath.Dir(exePath)
+	configPath := filepath.Join(exeDir, "config.json")
+	
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("生成配置文件失败: %w", err)
+	}
+	
+	err = os.WriteFile(configPath, data, 0644)
+	if err != nil {
+		return fmt.Errorf("保存配置文件失败: %w", err)
+	}
+	
+	logToFile("默认配置文件已创建")
+	return nil
+}
+
 func main() {
 	hideConsoleWindow()
+	
+	// 加载配置
+	if err := loadConfig(); err != nil {
+		// 如果加载配置失败，使用默认配置
+		fmt.Fprintf(os.Stderr, "加载配置失败，使用默认配置: %v\n", err)
+		config = defaultConfig
+	}
 	
 	logToFile("================================================")
 	logToFile("Windows主题自动切换程序启动")
@@ -609,7 +738,9 @@ func main() {
 	
 	// 交互模式
 	logToFile("模式: 交互模式")
-	logToFile("注意：浅色模式下将设置白色任务栏字体但不开启重点颜色功能")
+	logToFile(fmt.Sprintf("配置信息：浅色模式字体=%s，深色模式字体=%s，切换时间=%d:00和%d:00", 
+		config.LightModeTaskbarColor, config.DarkModeTaskbarColor,
+		config.LightTimeStart, config.DarkTimeStart))
 	
 	if !isAdmin() {
 		logToFile("错误：需要以管理员身份运行此程序")
@@ -632,12 +763,13 @@ func main() {
 		logToFile("请手动创建计划任务：")
 		logToFile("1. 打开'任务计划程序'")
 		logToFile("2. 创建基本任务")
-		logToFile("3. 设置触发器为每天6:00和18:00")
+		logToFile(fmt.Sprintf("3. 设置触发器为每天 %d:00 和 %d:00", config.LightTimeStart, config.DarkTimeStart))
 		logToFile("4. 操作为启动程序，选择此exe文件，参数添加--scheduled")
 		logToFile("5. 勾选'使用最高权限运行'")
 	} else {
 		logToFile("计划任务设置成功")
-		logToFile("提示：主题切换将由Windows计划任务在6:00和18:00自动执行")
+		logToFile(fmt.Sprintf("提示：主题切换将由Windows计划任务在 %d:00 和 %d:00 自动执行", 
+			config.LightTimeStart, config.DarkTimeStart))
 		logToFile("提示：您可以在'任务计划程序'中查看和管理任务")
 		
 		// 立即执行一次切换
@@ -649,6 +781,7 @@ func main() {
 		// 显示成功信息并退出
 		logToFile("程序设置完成，将在10秒后退出")
 		logToFile("您可以查看日志文件了解详情：theme_switcher.log")
+		logToFile("如需修改配置，请编辑同目录下的 config.json 文件")
 		time.Sleep(10 * time.Second)
 	}
 }

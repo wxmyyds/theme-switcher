@@ -1,0 +1,7 @@
+{
+  "light_mode_taskbar_color": "default",
+  "dark_mode_taskbar_color": "default",
+  "light_time_start": 6,
+  "dark_time_start": 18,
+  "enable_logging": true
+}

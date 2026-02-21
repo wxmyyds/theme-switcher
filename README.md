@@ -1,98 +1,54 @@
 # Windows 主题自动切换器
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/yourusername/theme-switcher)
-[![Platform](https://img.shields.io/badge/platform-Windows-brightgreen.svg)](https://github.com/yourusername/theme-switcher)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/yourusername/theme-switcher)
-
 ## 📖 简介
 
-Windows主题自动切换器是一个能够根据时间自动切换Windows系统浅色/深色主题的工具。它通过修改注册表实现主题切换，并支持自定义任务栏字体颜色。
+根据时间自动切换 Windows 浅色/深色主题，并通过模拟“自定义”模式逻辑，解决深色模式下任务栏字体无法变黑的系统限制。
 
-## ✨ 功能特点
+## ✨ 功能
 
-- **自动切换**：根据设定的时间自动切换浅色/深色主题
-- **自定义颜色**：可分别设置浅色/深色模式下的任务栏字体颜色
-- **灵活配置**：通过JSON配置文件自定义所有参数
-- **计划任务**：自动创建Windows计划任务，无需手动设置
-- **日志记录**：可选择是否记录运行日志
-- **无窗口运行**：后台静默运行，不干扰用户操作
+* **自动切换**：按设定的小时数触发主题变更。
+* **字体修复**：支持在深色模式下强制使用黑色任务栏字体。
+* **自动部署**：首次运行自动创建 Windows 计划任务（支持登录时触发）。
+* **无感运行**：后台静默运行，不干扰操作。
 
-## 📋 系统要求
+## ⚙️ 参数说明 (`config.json`)
 
-- Windows 10 / Windows 11
-- 管理员权限（必需）
+| 参数名 | 类型 | 说明 | 可选值 |
+| --- | --- | --- | --- |
+| **`light_mode_white_text`** | int | 浅色模式任务栏字体颜色 | `0`: 黑色 (默认), `1`: 白色 |
+| **`dark_mode_white_text`** | int | 深色模式任务栏字体颜色 | `1`: 白色 (默认), `0`: 黑色 |
+| **`light_time_start`** | int | 切换到浅色模式的小时 | `0-23` (默认 `6`) |
+| **`dark_time_start`** | int | 切换到深色模式的小时 | `0-23` (默认 `18`) |
+| **`enable_logging`** | int | 是否记录运行日志 | `1`: 启用, `0`: 禁用 |
+
+### 🛠️ 核心原理
+
+当 `dark_mode_white_text` 设为 `0` 时，程序会将“应用模式”设为深色，而将“系统模式”设为浅色。
+
+---
 
 ## 🚀 快速开始
 
-### 下载安装
-
-1. 下载最新版本的程序包
-2. 解压到任意目录（建议使用英文路径）
-3. 以管理员身份运行 `theme_switcher.exe`
-
-### 首次运行
-
-首次运行程序会自动：
-- 创建默认配置文件 `config.json`
-- 创建计划任务（每天6:00和18:00自动切换）
-- 立即执行一次主题切换
-- 生成日志文件 `theme_switcher.log`
-
-参数说明
-light_mode_taskbar_color
-类型：string
-
-说明：设置在浅色模式下任务栏字体的颜色
-
-可选值：
-
-"white"：任务栏字体显示为白色
-
-"default"：使用系统默认颜色
-
-dark_mode_taskbar_color
-类型：string
-
-说明：设置在深色模式下任务栏字体的颜色
-
-可选值：
-
-"black"：任务栏字体显示为黑色
-
-"default"：使用系统默认颜色
-
-light_time_start
-类型：int
-
-说明：设置切换到浅色模式的时间（小时）
-
-取值范围：0（午夜）到 23（晚上11点）
-
-dark_time_start
-类型：int
-
-说明：设置切换到深色模式的时间（小时）
-
-取值范围：0（午夜）到 23（晚上11点）
-
-enable_logging
-类型：bool
-
-说明：是否将程序运行信息写入日志文件
-
-可选值：
-
-true：启用日志记录，生成 theme_switcher.log 文件
-
-false：禁用日志记录
+1. **解压**：将程序放在固定文件夹。
+2. **运行**：以**管理员身份**运行 `theme-switcher.exe`。
+3. **生效**：程序会自动创建 `config.json` 并注册计划任务。
 
 ### 配置文件示例
 
 ```json
 {
-  "light_mode_taskbar_color": "white",
-  "dark_mode_taskbar_color": "default",
+  "light_mode_white_text": 0,
+  "dark_mode_white_text": 0,
   "light_time_start": 6,
   "dark_time_start": 18,
-  "enable_logging": true
+  "enable_logging": 1
 }
+
+```
+
+## ⚠️ 注意事项
+
+* 修改 `config.json` 后，需手动运行一次 `.exe` 以刷新设置。
+* 黑色字体模式下，任务栏背景色受 Windows 系统“主题色”透明度影响。
+
+---

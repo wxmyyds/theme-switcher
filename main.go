@@ -58,7 +58,7 @@ type Config struct {
 }
 
 var (
-	version       = "dev"
+	version       = "3.0"
 	defaultConfig = Config{
 		LightModeWhiteText: false,
 		DarkModeWhiteText:  true,

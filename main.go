@@ -118,11 +118,11 @@ func runAsAdmin() error {
 	if err != nil {
 		return fmt.Errorf("创建路径字符串失败: %w", err)
 	}
-	args := ""
-	if len(os.Args) > 1 {
-		args = strings.Join(os.Args[1:], " ")
+	var encoded []string
+	for _, arg := range os.Args[1:] {
+		encoded = append(encoded, encodeArg(arg))
 	}
-	argPtr, err := windows.UTF16PtrFromString(args)
+	argPtr, err := windows.UTF16PtrFromString(strings.Join(encoded, " "))
 	if err != nil {
 		return fmt.Errorf("创建参数字符串失败: %w", err)
 	}
@@ -154,4 +154,43 @@ func hideConsoleWindow() {
 	if consoleWindow != 0 {
 		procShowWindow.Call(consoleWindow, 0)
 	}
+}
+
+func encodeArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	needsQuoting := false
+	for _, c := range arg {
+		if c == ' ' || c == '\t' || c == '"' {
+			needsQuoting = true
+			break
+		}
+	}
+	if !needsQuoting {
+		return arg
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(arg); i++ {
+		c := arg[i]
+		if c == '\\' {
+			backslashCount := 0
+			for ; i < len(arg) && arg[i] == '\\'; i++ {
+				backslashCount++
+			}
+			i--
+			if i+1 < len(arg) && arg[i+1] == '"' {
+				b.WriteString(strings.Repeat(`\\`, backslashCount))
+			} else {
+				b.WriteString(strings.Repeat(`\`, backslashCount))
+			}
+		} else if c == '"' {
+			b.WriteString(`\"`)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 )
 
@@ -43,7 +44,7 @@ func Load(path string) (*Config, error) {
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		cfg = Default
-		return &cfg, Save(path, &cfg)
+		return &cfg, fmt.Errorf("配置文件解析失败: %w", err)
 	}
 	cfg.Validate()
 	return &cfg, nil

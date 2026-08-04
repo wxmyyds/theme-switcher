@@ -60,6 +60,8 @@ go build -ldflags="-H windowsgui -s -w" -trimpath -o ThemeSwitcher.exe
 - `dark_time_start` (int)：切换到深色模式的起始小时（0-23）
 - `enable_logging` (bool)：是否记录运行日志
 
+> **注意**：如果 `config.json` 存在格式错误（如语法错误、编辑中断导致截断），程序会使用默认配置运行，但**不会覆盖原文件**。请根据日志中"配置文件解析失败"的提示修复文件后重新运行。
+
 ## 故障排查
 
 - 如果计划任务创建失败，请检查 `theme_switcher.log` 中关于“计划任务设置失败”的条目并贴出 PowerShell 输出以便排查。

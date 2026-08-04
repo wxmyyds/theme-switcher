@@ -5,6 +5,8 @@ import (
 	"os"
 )
 
+const filePerm = 0644
+
 type Config struct {
 	LightModeWhiteText bool `json:"light_mode_white_text"`
 	DarkModeWhiteText  bool `json:"dark_mode_white_text"`
@@ -52,5 +54,5 @@ func Save(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, filePerm)
 }

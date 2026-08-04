@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -14,6 +15,8 @@ import (
 	"themeswitcher/scheduler"
 	"themeswitcher/theme"
 )
+
+const shellExecuteSuccessThreshold = 32
 
 const version = "3.0"
 
@@ -115,7 +118,11 @@ func runAsAdmin() error {
 	if err != nil {
 		return fmt.Errorf("创建路径字符串失败: %w", err)
 	}
-	argPtr, err := windows.UTF16PtrFromString("")
+	args := ""
+	if len(os.Args) > 1 {
+		args = strings.Join(os.Args[1:], " ")
+	}
+	argPtr, err := windows.UTF16PtrFromString(args)
 	if err != nil {
 		return fmt.Errorf("创建参数字符串失败: %w", err)
 	}
@@ -131,7 +138,7 @@ func runAsAdmin() error {
 		0,
 		0,
 	)
-	if ret <= 32 {
+	if ret <= shellExecuteSuccessThreshold {
 		return fmt.Errorf("ShellExecute失败，返回值: %d", ret)
 	}
 	return nil

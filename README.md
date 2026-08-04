@@ -64,3 +64,17 @@ go build -ldflags="-H windowsgui -s -w" -trimpath -o ThemeSwitcher.exe
 
 - 如果计划任务创建失败，请检查 `theme_switcher.log` 中关于“计划任务设置失败”的条目并贴出 PowerShell 输出以便排查。
 - 如果不想自动创建计划任务，可手动运行可执行文件并在任务计划程序中创建等效任务，参数为 `--scheduled`。
+
+### 卸载
+
+删除程序后，需手动移除计划任务，否则系统会持续尝试执行不存在的程序：
+
+1. 打开任务计划程序（`taskschd.msc`）
+2. 在任务计划程序库中找到 `WindowsThemeAutoSwitcher`
+3. 右键 → 删除
+
+或使用命令行（管理员）：
+
+```powershell
+Unregister-ScheduledTask -TaskName WindowsThemeAutoSwitcher -Confirm:$false
+```

@@ -8,7 +8,15 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const regPersonalize = `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
+const (
+	regPersonalize = `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
+
+	hwndBroadcast    = 0xFFFF
+	wmSettingChange  = 0x001A
+	wmDWMColorChange = 0x0320
+	smtoAbortIfHung  = 0x0002
+	sendTimeoutMs    = 3000
+)
 
 var (
 	user32               = windows.NewLazySystemDLL("user32.dll")
@@ -69,12 +77,12 @@ func refresh() error {
 		}
 		var result uintptr
 		ret, _, _ := procSendMessageTimeout.Call(
-			uintptr(0xFFFF),
-			uintptr(0x001A),
+			uintptr(hwndBroadcast),
+			uintptr(wmSettingChange),
 			0,
 			uintptr(unsafe.Pointer(lParamPtr)),
-			uintptr(0x0002),
-			3000,
+			uintptr(smtoAbortIfHung),
+			uintptr(sendTimeoutMs),
 			uintptr(unsafe.Pointer(&result)),
 		)
 		if ret == 0 {
@@ -84,14 +92,17 @@ func refresh() error {
 
 	lParamPtr, _ := windows.UTF16PtrFromString("")
 	var result uintptr
-	procSendMessageTimeout.Call(
-		uintptr(0xFFFF),
-		uintptr(0x0320),
+	ret, _, _ := procSendMessageTimeout.Call(
+		uintptr(hwndBroadcast),
+		uintptr(wmDWMColorChange),
 		0,
 		uintptr(unsafe.Pointer(lParamPtr)),
-		uintptr(0x0002),
-		3000,
+		uintptr(smtoAbortIfHung),
+		uintptr(sendTimeoutMs),
 		uintptr(unsafe.Pointer(&result)),
 	)
+	if ret == 0 {
+		return fmt.Errorf("广播 DWM 颜色变更通知失败")
+	}
 	return nil
 }

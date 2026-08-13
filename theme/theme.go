@@ -51,13 +51,11 @@ func Apply(isLight bool, lightWhiteText, darkWhiteText bool) error {
 		useWhiteText = lightWhiteText
 	}
 
-	sysMode := appMode
-	colorPrevalence := uint32(0)
+	sysMode := uint32(1)
 	if useWhiteText {
-		colorPrevalence = 1
-	} else {
-		sysMode = 1
+		sysMode = 0
 	}
+	colorPrevalence := uint32(0)
 
 	if err := k.SetDWordValue("SystemUsesLightTheme", sysMode); err != nil {
 		return fmt.Errorf("设置系统主题失败: %w", err)

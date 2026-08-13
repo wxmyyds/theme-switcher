@@ -18,7 +18,7 @@ import (
 
 const shellExecuteSuccessThreshold = 32
 
-const version = "3.0"
+const version = "3.0.4"
 
 var (
 	exePath    string

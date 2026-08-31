@@ -1,6 +1,7 @@
 ﻿*.exe
 *.log
 config.json
+CHANGELOG.md
 .vscode/
 .idea/
 .DS_Store

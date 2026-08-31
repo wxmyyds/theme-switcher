@@ -50,7 +50,7 @@ type shellExecuteInfo struct {
 	hProcess       windows.Handle
 }
 
-var version = "3.0.4"
+var version = "3.0.5"
 
 var (
 	exePath    string

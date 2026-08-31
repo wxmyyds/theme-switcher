@@ -18,7 +18,7 @@
 1. 下载或在源码目录编译：
 
 ```bash
-go build -ldflags="-H windowsgui -s -w -X main.version=3.0.4" -trimpath -o ThemeSwitcher.exe
+go build -ldflags="-H windowsgui -s -w -X main.version=3.0.5" -trimpath -o ThemeSwitcher.exe
 ```
 
 2. 以管理员身份运行生成的 `ThemeSwitcher.exe`（首次运行会提示提升）：
@@ -113,5 +113,5 @@ Unregister-ScheduledTask -TaskName WindowsThemeAutoSwitcher -Confirm:$false
 
 ```bash
 go vet ./...
-go build -ldflags="-H windowsgui -s -w -X main.version=3.0.4" -trimpath -o ThemeSwitcher.exe
+go build -ldflags="-H windowsgui -s -w -X main.version=3.0.5" -trimpath -o ThemeSwitcher.exe
 ```
